@@ -1,0 +1,12 @@
+Considere um grupo de processos que enviam mensagens de multicast uns aos outros. Cada mensagem transporta sua marca de tempo. 
+
+Uma mensagem de multicast também é enviada conceitualmente para o remetente. Quando um processo recebe uma mensagem ela é colocada numa fila, ordenada conforme a marca de tempo. O receptor envia mensagens de **multicast** de
+confirmação. 
+
+A marca de tempo da mensagem de agradecimento é maior que a marca de tempo de recebimento.
+
+Um processo só pode entregar a mensagem para a aplicação quando essa mensagem estiver no início da fila E tiver sido reconhecida por cada um dos processos. Neste momento a mensagem é retirada da fila. Cada processo terá a mesma cópia da fila e as mensagens serão entregues na mesma ordem. 
+
+Projete e implemente um algoritmode multicast totalmente ordenado e prove através de um exemplo que o algoritmo suporta os requisitos descritos. Mais detalhes sobre o funcionamento do algoritmo de multicast ordenado podem ser encontrados no Livro do Tanenbaum.
+
+Observação: Note que o ack de uma mensagem pode chegar em um processo antes da mensagem original. Por exemplo: em um cenário com 3 processos, p1, p2 e p3, suponha que p1 envie m1. M1 chega em p2. P2 envia ack (m1) para p1 e p3. Suponha que p3 ainda não tenha recebido m1 devido a algum atraso na rede. Portanto, neste caso, p3 receberá ack (m1) antes de m1. A solução desenvolvida deverá suportar este cenário.
