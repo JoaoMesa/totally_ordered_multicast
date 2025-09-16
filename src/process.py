@@ -33,9 +33,8 @@ class Process:
         self._server_socket = None
         self._running = threading.Event()
         
-        # Todos os processos no grupo (incluindo ele mesmo)
+        # Todos os processos no grupo 
         self.all_ports = sorted([port] + other_ports) 
-        # Mapear portas para nomes de processos corretamente
         port_to_process = {5000: "processo1", 5001: "processo2", 5002: "processo3"}
         self.all_processes = set([port_to_process[p] for p in self.all_ports])
         self.required_acks = len(self.all_processes)  # Precisa de confirmações de todos os processos
@@ -43,37 +42,27 @@ class Process:
         print(f"[{self.proc_id}] Todos os processos no grupo: {sorted(list(self.all_processes))}")
         print(f"[{self.proc_id}] Confirmações necessárias: {self.required_acks}")
         
-        # Confirmações pendentes - para lidar com o cenário onde
-        # um ack chega antes da mensagem original 
-        # Neste caso, armazenamos o ack pendente até que a mensagem original chegue
+        # Se o ack chega antes da mensagem, armazenamos o ack pendente até que a mensagem original chegue
         self.pending_acks = {}  # {message_id: lista de mensagens de confirmação}
         self.pending_lock = threading.Lock()
     
     def increment_clock(self):
-        """Passo 1 de Lamport: Antes de executar um evento, incrementar Ci."""
+        """Antes de executar um evento, incrementar Ci."""
         with self.clock_lock:
             old_clock = self.logical_clock
             self.logical_clock += self.clock_increment
-            print(f"[{self.proc_id}] Relógio incrementado (antes do evento): {old_clock} → {self.logical_clock}")
+            print(f"[{self.proc_id}] Relógio incrementado: {old_clock} → {self.logical_clock}")
             return self.logical_clock
     
     def update_clock_on_receive(self, received_timestamp):
-        """Passo 3a de Lamport: Ao receber a mensagem m, ajustar Cj ← max{Cj, ts(m)}."""
+        """ Ao receber a mensagem m, ajustar Cj = max{Cj, ts(m)}. + 1"""
         with self.clock_lock:
             old_clock = self.logical_clock
-            self.logical_clock = max(self.logical_clock, received_timestamp)
+            self.logical_clock = max(self.logical_clock, received_timestamp) + 1
             if self.logical_clock != old_clock:
                 print(f"[{self.proc_id}] Relógio ajustado no recebimento: {old_clock} → {self.logical_clock} (timestamp recebido: {received_timestamp})")
             else:
                 print(f"[{self.proc_id}] Relógio inalterado no recebimento: {self.logical_clock} (timestamp recebido: {received_timestamp})")
-    
-    def increment_for_delivery(self):
-        """Passo 3b de Lamport: Após ajustar o relógio, incrementar antes de entregar."""
-        with self.clock_lock:
-            old_clock = self.logical_clock
-            self.logical_clock += self.clock_increment
-            print(f"[{self.proc_id}] Relógio incrementado (antes da entrega): {old_clock} → {self.logical_clock}")
-            return self.logical_clock
     
     def get_clock(self):
         """Obter valor atual do relógio lógico."""
@@ -125,21 +114,11 @@ class Process:
     
     def _process_received_message(self, message):
         """
-        Processar uma mensagem recebida de acordo com as regras de multicast totalmente ordenado.
-        
-        Seguindo o protocolo:
-        1. Mensagens são timestampadas com o relógio lógico do sender
-        2. Ao receber, ajusta-se o relógio e incrementa
-        3. Mensagens são colocadas em uma fila local ordenada por timestamp
-        4. Confirmações (acks) são enviadas para todos os outros processos
-        5. Mensagens só são entregues quando estão no início da fila E têm acks de todos
+        Processar uma mensagem recebida, seja multicast ou confirmação (ack).
         """
         if message.msg_type == MessageType.MULTICAST:
-            # Passo 3a de Lamport: Ao receber, ajustar Cj ← max{Cj, ts(m)}
+            #Ao receber, ajustar Cj = max{Cj, ts(m)} + 1
             self.update_clock_on_receive(message.timestamp)
-            
-            # Passo 3b: Então executar passo 1 (incrementar) antes de entregar/processar
-            self.increment_for_delivery()
             
             # Adicionar à fila ordenada por timestamp, depois por remetente para quebra de empate
             with self.queue_lock:
@@ -169,11 +148,9 @@ class Process:
     
     def _process_acknowledgment(self, message):
         """Processar uma mensagem de confirmação."""
-        # Passo 3a de Lamport: Ao receber, ajustar Cj ← max{Cj, ts(m)}
+        # Ao receber, ajustar Cj = max{Cj, ts(m)} + 1
         self.update_clock_on_receive(message.timestamp)
         
-        # Passo 3b: Então executar passo 1 (incrementar) antes de processar
-        self.increment_for_delivery()
         
         # Verificar se temos a mensagem original
         with self.ack_lock:
@@ -192,10 +169,10 @@ class Process:
     
     def _send_acknowledgment(self, original_message):
         """Enviar confirmação para uma mensagem recebida."""
-        # Passo 1 de Lamport: Antes de executar evento (enviar), incrementar Ci
+        #  Antes de executar evento (enviar), incrementar Ci
         current_time = self.increment_clock()
         
-        # Passo 2: Definir timestamp da mensagem para Ci (após passo 1)
+        # Definir timestamp da mensagem para Ci (após passo 1)
         ack_message = Message(
             msg_type=MessageType.ACK,
             sender=self.proc_id,
@@ -254,10 +231,10 @@ class Process:
     
     def send_message(self, content):
         """Enviar uma mensagem usando multicast totalmente ordenado."""
-        # Passo 1 de Lamport: Antes de executar evento (enviar), incrementar Ci
+        # Antes de executar evento (enviar), incrementar Ci
         current_time = self.increment_clock()
         
-        # Passo 2: Definir timestamp da mensagem para Ci (após passo 1)
+        # Definir timestamp da mensagem para Ci (após passo 1)
         message = Message(
             msg_type=MessageType.MULTICAST,
             content=content,

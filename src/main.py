@@ -1,3 +1,10 @@
+###############
+#   Atividade de Sistemas Distribuídos
+#   Totally Ordered Multicast
+#   João Vitor Naves Mesa - 814149
+#
+################
+
 # main.py
 import socket
 import sys
@@ -8,10 +15,6 @@ PORTS = [5000, 5001, 5002]
 PROC_NAMES = {5000: "processo1", 5001: "processo2", 5002: "processo3"}
 
 def pick_free_port(candidates):
-    """
-    Try to bind each candidate port. If bind succeeds, close socket and return the port.
-    This reserves the port briefly so the Process can bind to it immediately afterward.
-    """
     for p in candidates:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
@@ -39,7 +42,6 @@ def main():
     except ValueError:
         clock_increment = 1
     
-    # Create list of all other ports for multicast
     other_ports = [p for p in PORTS if p != chosen]
     
     proc = Process(proc_id, chosen, other_ports, clock_increment)

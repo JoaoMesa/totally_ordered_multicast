@@ -11,7 +11,6 @@ class Message:
     
     def __init__(self, msg_type: MessageType, sender: str, timestamp: int, 
                  content: Optional[str] = None, original_msg_id: Optional[str] = None):
-        # Gera msg_id usando sender e timestamp
         self.msg_id = f"{sender}_{timestamp}"
         self.msg_type = msg_type
         self.sender = sender
