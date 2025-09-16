@@ -16,7 +16,7 @@ class Process:
         self.other_ports = other_ports
         self.clock_increment = clock_increment
         
-        # Relógio lógico
+        # Relógio lógico de Lamport
         self.logical_clock = 0
         self.clock_lock = threading.Lock()
         
@@ -24,8 +24,9 @@ class Process:
         self.message_queue = []
         self.queue_lock = threading.Lock()
         
-        # Rastreamento de confirmações
-        self.acknowledgments = {}  # {message_id: conjunto de process_ids que confirmaram}
+        # Rastreamento de confirmações (acks)
+        # Mantém registro de quais processos confirmaram cada mensagem
+        self.acknowledgments = {}
         self.ack_lock = threading.Lock()
         
         # Socket do servidor
@@ -33,21 +34,23 @@ class Process:
         self._running = threading.Event()
         
         # Todos os processos no grupo (incluindo ele mesmo)
-        self.all_ports = sorted([port] + other_ports)  # Ordenar para consistência
+        self.all_ports = sorted([port] + other_ports) 
         # Mapear portas para nomes de processos corretamente
         port_to_process = {5000: "processo1", 5001: "processo2", 5002: "processo3"}
         self.all_processes = set([port_to_process[p] for p in self.all_ports])
-        self.required_acks = len(self.all_processes)  # Precisa de confirmações de todos os processos (incluindo ele mesmo)
+        self.required_acks = len(self.all_processes)  # Precisa de confirmações de todos os processos
         
         print(f"[{self.proc_id}] Todos os processos no grupo: {sorted(list(self.all_processes))}")
         print(f"[{self.proc_id}] Confirmações necessárias: {self.required_acks}")
         
-        # Confirmações pendentes (para lidar com condições de corrida)
+        # Confirmações pendentes - para lidar com o cenário onde
+        # um ack chega antes da mensagem original 
+        # Neste caso, armazenamos o ack pendente até que a mensagem original chegue
         self.pending_acks = {}  # {message_id: lista de mensagens de confirmação}
         self.pending_lock = threading.Lock()
     
     def increment_clock(self):
-        """Passo 1: Antes de executar um evento, incrementar Ci."""
+        """Passo 1 de Lamport: Antes de executar um evento, incrementar Ci."""
         with self.clock_lock:
             old_clock = self.logical_clock
             self.logical_clock += self.clock_increment
@@ -55,7 +58,7 @@ class Process:
             return self.logical_clock
     
     def update_clock_on_receive(self, received_timestamp):
-        """Passo 3a: Ao receber a mensagem m, ajustar Cj ← max{Cj, ts(m)}."""
+        """Passo 3a de Lamport: Ao receber a mensagem m, ajustar Cj ← max{Cj, ts(m)}."""
         with self.clock_lock:
             old_clock = self.logical_clock
             self.logical_clock = max(self.logical_clock, received_timestamp)
@@ -65,7 +68,7 @@ class Process:
                 print(f"[{self.proc_id}] Relógio inalterado no recebimento: {self.logical_clock} (timestamp recebido: {received_timestamp})")
     
     def increment_for_delivery(self):
-        """Passo 3b: Após ajustar o relógio, incrementar antes de entregar."""
+        """Passo 3b de Lamport: Após ajustar o relógio, incrementar antes de entregar."""
         with self.clock_lock:
             old_clock = self.logical_clock
             self.logical_clock += self.clock_increment
@@ -97,7 +100,6 @@ class Process:
                 s.settimeout(1.0)
                 try:
                     conn, addr = s.accept()
-                    # Lidar com a conexão em uma thread separada
                     threading.Thread(target=self._handle_connection, args=(conn,), daemon=True).start()
                 except socket.timeout:
                     continue
@@ -122,18 +124,26 @@ class Process:
             conn.close()
     
     def _process_received_message(self, message):
-        """Processar uma mensagem recebida de acordo com as regras de multicast totalmente ordenado."""
+        """
+        Processar uma mensagem recebida de acordo com as regras de multicast totalmente ordenado.
+        
+        Seguindo o protocolo:
+        1. Mensagens são timestampadas com o relógio lógico do sender
+        2. Ao receber, ajusta-se o relógio e incrementa
+        3. Mensagens são colocadas em uma fila local ordenada por timestamp
+        4. Confirmações (acks) são enviadas para todos os outros processos
+        5. Mensagens só são entregues quando estão no início da fila E têm acks de todos
+        """
         if message.msg_type == MessageType.MULTICAST:
-            # Passo 3a: Ao receber, ajustar Cj ← max{Cj, ts(m)}
+            # Passo 3a de Lamport: Ao receber, ajustar Cj ← max{Cj, ts(m)}
             self.update_clock_on_receive(message.timestamp)
             
             # Passo 3b: Então executar passo 1 (incrementar) antes de entregar/processar
             self.increment_for_delivery()
             
-            # Adicionar à fila ordenada por timestamp, depois por remetente para quebra de empate consistente
+            # Adicionar à fila ordenada por timestamp, depois por remetente para quebra de empate
             with self.queue_lock:
                 self.message_queue.append(message)
-                # CRÍTICO: Ordenação consistente em todos os processos
                 self.message_queue.sort(key=lambda m: (m.timestamp, m.sender))
             
             print(f"[{self.proc_id}] Recebido multicast de {message.sender}: '{message.content}' (ts:{message.timestamp})")
@@ -143,16 +153,15 @@ class Process:
                 self.acknowledgments[message.msg_id] = set()
             
             # Processar quaisquer confirmações pendentes para esta mensagem
+            # Isso lida com o cenário onde acks chegaram antes da mensagem original
             with self.pending_lock:
                 if message.msg_id in self.pending_acks:
                     pending_ack_messages = self.pending_acks[message.msg_id]
                     del self.pending_acks[message.msg_id]
-                    # Processar todas as confirmações pendentes
                     for ack_msg in pending_ack_messages:
                         self._process_acknowledgment(ack_msg)
             
-            # Enviar confirmação para todos os processos (incluindo o próprio)
-            # Pequeno atraso para reduzir condições de corrida
+            # Enviar confirmação para todos os outros processos
             threading.Timer(0.01, self._send_acknowledgment, args=(message,)).start()
             
         elif message.msg_type == MessageType.ACK:
@@ -160,7 +169,7 @@ class Process:
     
     def _process_acknowledgment(self, message):
         """Processar uma mensagem de confirmação."""
-        # Passo 3a: Ao receber, ajustar Cj ← max{Cj, ts(m)}
+        # Passo 3a de Lamport: Ao receber, ajustar Cj ← max{Cj, ts(m)}
         self.update_clock_on_receive(message.timestamp)
         
         # Passo 3b: Então executar passo 1 (incrementar) antes de processar
@@ -173,7 +182,8 @@ class Process:
                 self.acknowledgments[message.original_msg_id].add(message.sender)
                 print(f"[{self.proc_id}] Recebida confirmação de {message.sender} para mensagem {message.original_msg_id}")
             else:
-                # Mensagem original ainda não recebida, armazenar confirmação como pendente
+                # Mensagem original ainda não recebida
+                # Armazenamos a confirmação como pendente até que a mensagem original chegue
                 with self.pending_lock:
                     if message.original_msg_id not in self.pending_acks:
                         self.pending_acks[message.original_msg_id] = []
@@ -182,7 +192,7 @@ class Process:
     
     def _send_acknowledgment(self, original_message):
         """Enviar confirmação para uma mensagem recebida."""
-        # Passo 1: Antes de executar evento (enviar), incrementar Ci
+        # Passo 1 de Lamport: Antes de executar evento (enviar), incrementar Ci
         current_time = self.increment_clock()
         
         # Passo 2: Definir timestamp da mensagem para Ci (após passo 1)
@@ -195,21 +205,23 @@ class Process:
         
         print(f"[{self.proc_id}] Enviando confirmação para mensagem de {original_message.sender} (ts:{current_time})")
         
-        # Enviar confirmação para todos os processos no grupo (incluindo nós mesmos)
+        # Enviar confirmação para todos os processos no grupo
         self._broadcast_message(ack_message)
     
     def try_deliver_message(self):
         """
         Tentar entregar a próxima mensagem da fila (entrega manual).
-        REGRA DE MULTICAST TOTALMENTE ORDENADO: Só pode entregar a mensagem do INÍCIO,
-        e somente se foi confirmada por TODOS os processos.
+        
+        REGRA DE MULTICAST TOTALMENTE ORDENADO: 
+        - Só pode entregar a mensagem do INÍCIO da fila
+        - E somente se foi confirmada por TODOS os processos do grupo
         """
         with self.queue_lock:
             if not self.message_queue:
                 print(f"[{self.proc_id}] Nenhuma mensagem na fila para entregar")
                 return False
             
-            # CRÍTICO: Somente verificar o INÍCIO da fila (índice 0)
+            #  Somente verificar o INÍCIO da fila (índice 0)
             head_message = self.message_queue[0]
             
             # Verificar se esta mensagem do INÍCIO foi confirmada por todos os processos
@@ -242,7 +254,7 @@ class Process:
     
     def send_message(self, content):
         """Enviar uma mensagem usando multicast totalmente ordenado."""
-        # Passo 1: Antes de executar evento (enviar), incrementar Ci
+        # Passo 1 de Lamport: Antes de executar evento (enviar), incrementar Ci
         current_time = self.increment_clock()
         
         # Passo 2: Definir timestamp da mensagem para Ci (após passo 1)
@@ -255,12 +267,12 @@ class Process:
         
         print(f"[{self.proc_id}] Enviando multicast: '{content}' (ts:{current_time})")
         
-        # Inicializar rastreamento de confirmação (vazio - será preenchido conforme as confirmações chegarem)
+        # Inicializar rastreamento de confirmação
         with self.ack_lock:
             self.acknowledgments[message.msg_id] = set()
         
-        # Transmitir para todos os processos (incluindo nós mesmos)
-        # A mensagem será enfileirada quando a recebermos de volta (como outros processos)
+        # Transmitir para todos os processos 
+        # A mensagem será enfileirada quando a recebermos de volta
         self._broadcast_message(message)
     
     def _broadcast_message(self, message):
@@ -306,7 +318,7 @@ class Process:
                     if acked_by:
                         print(f"      Confirmado por: {sorted(list(acked_by))}")
                 
-                # Mostrar confirmações pendentes
+                # Mostrar confirmações pendentes (acks que chegaram antes das mensagens originais)
                 with self.pending_lock:
                     if self.pending_acks:
                         print(f"\n[{self.proc_id}] Confirmações pendentes (recebidas antes da mensagem original):")
@@ -314,7 +326,7 @@ class Process:
                             senders = [ack.sender for ack in ack_list]
                             print(f"  Mensagem {msg_id}: Confirmações de {senders}")
                 
-                # Informação adicional sobre entrega totalmente ordenada
+                
                 if self.message_queue:
                     head_msg = self.message_queue[0]
                     with self.ack_lock:
