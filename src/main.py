@@ -52,6 +52,7 @@ def main():
         print("  queue          - Mostra a fila de mensagens atual")
         print("  deliver        - Tenta entregar a mensagem que está no iníci da fila")
         print("  clock          - Mostra o clock atual")
+        print("  pass           - Incrementa o relógio em um ciclo")
         print("  quit           - Para o processo")
         
         while True:
@@ -68,6 +69,8 @@ def main():
                     proc.show_queue()
                 elif user_input.lower() == "clock":
                     print(f"Clock atual: {proc.get_clock()}")
+                elif user_input.lower() == "pass":
+                    proc.increment_clock()
                 elif user_input.startswith("send "):
                     message_content = user_input[5:].strip()
                     if message_content:
